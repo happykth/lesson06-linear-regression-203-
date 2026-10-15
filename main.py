@@ -9,6 +9,7 @@ DATA_URL = (
 )
 LAST_YEAR = 2025      # 수업의 기준 기간 끝
 MIN_DAYS = 300        # 관측일이 이보다 적은 해는 제외
+RECENT_YEARS = 20     # '최근' 기울기를 구할 때 쓰는 연수
 
 st.set_page_config(page_title="기온 예측기", page_icon="🌡️", layout="centered")
 
@@ -50,12 +51,30 @@ if len(annual) < 2:
 x = annual["연도"].to_numpy(dtype=float)
 y = annual["연평균기온"].to_numpy(dtype=float)
 
-slope, intercept = np.polyfit(x, y, 1)
-r = float(np.corrcoef(x, y)[0, 1])
+
+
+def fit_line(xs: np.ndarray, ys: np.ndarray):
+    """직선 기울기, 절편, 상관계수, 기울기의 표준오차를 구한다."""
+    s, b = np.polyfit(xs, ys, 1)
+    rr = float(np.corrcoef(xs, ys)[0, 1])
+    resid = ys - (s * xs + b)
+    se = float(np.sqrt(np.sum(resid**2) / (len(xs) - 2) / np.sum((xs - xs.mean()) ** 2)))
+    return float(s), float(b), rr, se
+
 
 n_years = len(annual)
 start_year = int(annual["연도"].min())
 end_year = int(annual["연도"].max())
+
+# 전체 기간으로 구한 직선 (예측에 사용)
+slope, intercept, r, slope_se = fit_line(x, y)
+
+# 최근 N년만으로 구한 직선 (기울기 비교용)
+recent_mask = x > end_year - RECENT_YEARS
+x_recent, y_recent = x[recent_mask], y[recent_mask]
+recent_start = int(x_recent.min())
+n_recent = len(x_recent)
+slope_r, intercept_r, r_recent, slope_r_se = fit_line(x_recent, y_recent)
 
 # --- 직선을 만든 데이터 정보 ---
 c1, c2, c3 = st.columns(3)
@@ -112,6 +131,16 @@ fig.add_trace(
 )
 fig.add_trace(
     go.Scatter(
+        x=[recent_start, end_year],
+        y=[slope_r * recent_start + intercept_r, slope_r * end_year + intercept_r],
+        mode="lines",
+        name=f"최근 {n_recent}년 직선",
+        line=dict(width=3, color="royalblue", dash="dash"),
+        hoverinfo="skip",
+    )
+)
+fig.add_trace(
+    go.Scatter(
         x=[year],
         y=[pred],
         mode="markers",
@@ -130,11 +159,43 @@ fig.update_layout(
 st.plotly_chart(fig, width="stretch")
 
 # --- 상관계수 & 직선 식 ---
-m1, m2 = st.columns(2)
-m1.metric("상관계수 (r)", f"{r:.3f}")
-m2.metric("기울기", f"{slope * 10:+.3f} °C / 10년")
+st.metric("상관계수 (r)", f"{r:.3f}")
 sign = "+" if intercept >= 0 else "-"
 st.markdown(f"**회귀 직선:** 기온 = {slope:.4f} × 연도 {sign} {abs(intercept):.2f}")
+
+# --- 100년에 몇 도 오르는가 ---
+st.subheader("100년에 몇 도 오를까?")
+st.markdown(
+    f"""
+    <div style="text-align:center; padding:0.8rem 0;">
+        <div style="font-size:1.1rem; opacity:0.7;">전체 기간({start_year}~{end_year}년) 직선의 기울기</div>
+        <div style="font-size:4rem; font-weight:800; line-height:1.2;">{slope * 100:+.2f} °C</div>
+        <div style="font-size:1.1rem; opacity:0.7;">/ 100년</div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+# --- 전체 기간 vs 최근 N년 기울기 비교 ---
+st.markdown(f"##### 전체 기간 vs 최근 {n_recent}년")
+col_all, col_recent = st.columns(2)
+with col_all:
+    st.markdown(f"**전체 기간** ({start_year}~{end_year}년, {n_years}개 해)")
+    st.metric("100년에", f"{slope * 100:+.2f} °C")
+    st.caption(f"상관계수 r = {r:.3f} · 오차 ±{slope_se * 100:.2f} °C")
+with col_recent:
+    st.markdown(f"**최근 {n_recent}년** ({recent_start}~{end_year}년, {n_recent}개 해)")
+    st.metric(
+        "100년에",
+        f"{slope_r * 100:+.2f} °C",
+        delta=f"전체 기간보다 {(slope_r - slope) * 100:+.2f} °C",
+        delta_color="off",
+    )
+    st.caption(f"상관계수 r = {r_recent:.3f} · 오차 ±{slope_r_se * 100:.2f} °C")
+st.caption(
+    "※ 오차는 기울기의 표준오차(100년 환산)입니다. 짧은 기간일수록 기울기가 크게 흔들리므로, "
+    "최근 기울기는 '지금 속도'를 보여 줄 뿐 100년 뒤를 그대로 예측한 값은 아닙니다."
+)
 
 with st.expander("연도별 평균기온 표 보기"):
     st.dataframe(
